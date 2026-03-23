@@ -1,0 +1,285 @@
+class Collection {
+    fn init(file_path, in_memory = false) {
+        self.file_path = file_path;
+        self.in_memory = in_memory;
+        self.schema = null;
+        self.unique_fields = [];
+
+        self.cache = lazy {
+            if self.in_memory {
+                return [];
+            }
+
+            let content = read_file(self.file_path);
+
+            if content != null && content != "" {
+                let parsed_data = parse_json(content);
+                if parsed_data != null {
+                    return parsed_data;
+                }
+            }
+
+            return [];
+        };
+    }
+
+    fn set_unique(fields_array) {
+        self.unique_fields = fields_array;
+    }
+
+    private fn check_unique(document, exclude_id) {
+        if self.unique_fields.len() == 0 return true;
+
+        for field in self.unique_fields {
+            let value_to_check = document[field];
+
+            if value_to_check != null {
+                for item in self.cache {
+                    if item["_id"] != exclude_id {
+                        if item[field] == value_to_check {
+                            println("[LoxDB] Unique constraint violated on '${field}'. The value '${value_to_check}' is already taken.");
+                            return false;
+                        }
+                    }
+                }
+            }
+        }
+
+        return true;
+    }
+
+    fn set_schema(schema_dict) {
+        self.schema = schema_dict;
+    }
+
+    private fn validate(document) {
+        if self.schema == null return true;
+
+        for key in self.schema {
+            let expected_type = self.schema[key];
+            let actual_value = document[key];
+
+            if actual_value == null {
+                println("[LoxDB] Missing required field: ${key}");
+                return false;
+            }
+
+            let actual_type = typeof actual_value;
+
+            // normalize Strings and LoxStrings into just Strings
+            if expected_type == "String" && actual_type == "LoxString" || expected_type == "LoxString" && actual_type == "String" {
+                actual_type = "String";
+            }
+
+            if actual_type != expected_type {
+                println("[LoxDB] Type mismatch on ${key}. Expected '${expected_type}', got '${actual_type}' instead.");
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private fn save() {
+        if self.in_memory return null;
+
+        let json_str = stringify_json(self.cache);
+        let tmp_path = "${self.file_path}.tmp";
+
+        let write_success = write_file(tmp_path, json_str);
+
+        if write_success {
+            ___rename_file___(tmp_path, self.file_path);
+        } else {
+            println("[LoxDB] CRITICAL ERROR: Failed to write to temporary file ${tmp_path}");
+        }
+    }
+
+    fn insert(document) {
+        if !self.validate(document) return null;
+        if !self.check_unique(document, null) return null;
+
+        if document["_id"] == null {
+            document["_id"] = ___uuid___();
+        }
+
+        self.cache.insert(document);
+        self.save();
+
+        return document;
+    }
+
+    fn insert_many(documents) {
+        let successful_inserts = [];
+
+        for doc in documents {
+            if self.validate(doc) {
+                if self.check_unique(doc, null) {
+                    if doc["_id"] == null doc["_id"] = ___uuid___();
+                    self.cache.insert(doc);
+                    successful_inserts.insert(doc);
+                }
+            }
+        }
+
+        if successful_inserts.len() > 0 self.save();
+        return successful_inserts;
+    }
+
+    fn find_by(key, value) {
+        let results = [];
+
+        for item in self.cache {
+            if item[key] == value results.insert(item);
+        }
+
+        return results;
+    }
+
+    fn find_one(key, value) {
+        for item in self.cache {
+            if item[key] == value return item;
+        }
+
+        return null;
+    }
+
+    fn find(predicate_fn, sort_key = null, ascending = true, limit = -1, skip = 0) {
+        let results = [];
+
+        for itm in self.cache {
+            if predicate_fn(itm) {
+                results.insert(itm);
+            }
+        }
+
+        if sort_key != null {
+            results = ___sort_docs___(results, sort_key, ascending);
+        }
+
+        let final_results = [];
+        let skipped = 0;
+        let limit_reached = false;
+
+        for item in results {
+            if !limit_reached {
+                if skipped < skip {
+                    skipped = skipped + 1;
+                } else {
+                    final_results.insert(item);
+
+                    if limit != -1 {
+                        if final_results.len() >= limit {
+                            limit_reached = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        return final_results;
+    }
+
+    fn find_all(sort_key = null, ascending = true, limit = -1, skip = 0) -> self.find(fn (item) { return true; }, sort_key, ascending, limit, skip);
+
+    fn update(id, replacement_doc) {
+        if !self.validate(replacement_doc) return false;
+        if !self.check_unique(replacement_doc, id) return false;
+
+        let updated = false;
+        let new_cache = [];
+
+        for item in self.cache {
+            if item["_id"] == id {
+                replacement_doc["_id"] = id;
+                new_cache.insert(replacement_doc);
+                updated = true;
+            } else {
+                new_cache.insert(item);
+            }
+        }
+
+        if updated {
+            self.cache = new_cache;
+            self.save();
+        }
+
+        return updated;
+    }
+
+    fn delete(id) {
+        let deleted = false;
+        let new_cache = [];
+
+        for item in self.cache {
+            if item["_id"] != id {
+                new_cache.insert(item);
+            } else {
+                deleted = true;
+            }
+        }
+
+        if deleted {
+            self.cache = new_cache;
+            self.save();
+        }
+
+        return deleted;
+    }
+
+    fn delete_many(predicate_fn) {
+        let deleted_count = 0;
+        let new_cache = [];
+
+        for item in self.cache {
+            if predicate_fn(item) {
+                deleted_count = deleted_count + 1;
+            } else {
+                new_cache.insert(item);
+            }
+        }
+
+        if deleted_count > 0 {
+            self.cache = new_cache;
+            self.save();
+        }
+
+        return deleted_count;
+    }
+
+    fn populate(results, local_key, target_collection, target_key = "_id", as_key = null) {
+        if as_key == null {
+            as_key = local_key;
+        }
+
+        for item in results {
+            let ref_value = item[local_key];
+
+            if ref_value != null {
+                let linked_doc = target_collection.find_one(target_key, ref_value);
+
+                if linked_doc != null {
+                    item[as_key] = linked_doc;
+                }
+            }
+        }
+
+        return results;
+    }
+}
+
+class LoxDB {
+    fn init(prefix = "db_", in_memory = false) {
+        self.prefix = prefix;
+        self.in_memory = in_memory;
+        self.collections = {};
+    }
+
+    fn collection(name) {
+        if self.collections[name] == null {
+            self.collections[name] = new Collection("${self.prefix}${name}.json", self.in_memory);
+        }
+
+        return self.collections[name];
+    }
+}
