@@ -1,0 +1,7 @@
+{
+    "name": "loxdb",
+    "version": "1.0.0",
+    "author": "andre-1337",
+    "description": "A NoSQL database for Lox++",
+    "license": "none"
+}

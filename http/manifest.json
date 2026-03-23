@@ -1,0 +1,7 @@
+{
+    "name": "http",
+    "version": "1.0.0",
+    "author": "andre-1337",
+    "description": "An Express-like library for Lox++",
+    "license": "none"
+}
